@@ -1,4 +1,4 @@
-# Ashframe Game Control
+# Ashframe Dashboard
 
 A small, dependency-free dashboard and backup foundation for self-hosted game servers. It was built for Ashframe's home infrastructure, then published as a generic reference implementation.
 
