@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Root-only action gate used by the loopback dashboard.
+set -euo pipefail
+
+action="${1:-}"
+game_id="${2:-}"
+[[ "$action" =~ ^(start|stop|restart)$ ]] || { echo 'Unsupported action.' >&2; exit 2; }
+[[ "$game_id" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo 'Invalid game ID.' >&2; exit 2; }
+
+game_root="${ASHFRAME_GAME_ROOT:-/srv/games}"
+config="$(find "$game_root" -mindepth 2 -maxdepth 2 -name .ashframe-game.conf -type f -exec grep -l "^GAME_ID=${game_id}$" {} + | head -n 1)"
+[[ -n "$config" ]] || { echo 'Unknown game.' >&2; exit 2; }
+grep -qx 'ENABLED=true' "$config" || { echo 'Game is disabled.' >&2; exit 2; }
+systemctl is-enabled --quiet "ashframe-${game_id}.service" || { echo 'Service has not been migrated to systemd yet.' >&2; exit 2; }
+
+exec /usr/bin/systemctl "$action" "ashframe-${game_id}.service"

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Finds a configured game by ID, then starts only its configured launcher.
+set -euo pipefail
+
+game_id="${1:?game ID required}"
+game_root="${ASHFRAME_GAME_ROOT:-$HOME/games}"
+field() { sed -n "s/^${2}=//p" "$1" | head -n 1; }
+
+config=''
+while IFS= read -r candidate; do
+  if [[ "$(field "$candidate" GAME_ID)" == "$game_id" ]]; then config="$candidate"; break; fi
+done < <(find "$game_root" -mindepth 2 -maxdepth 2 -name .ashframe-game.conf -type f -print 2>/dev/null)
+
+[[ -n "$config" ]] || { echo "No configuration for $game_id" >&2; exit 1; }
+[[ "$(field "$config" ENABLED)" == true ]] || { echo "$game_id is disabled in its configuration" >&2; exit 1; }
+
+root="$(dirname "$config")"
+launcher="$(field "$config" LAUNCH_COMMAND)"
+[[ -n "$launcher" ]] || { echo "No launch command for $game_id" >&2; exit 1; }
+
+case "$(field "$config" GAME_TYPE)" in
+  cubyz) export NO_PAUSE=1 ;;
+esac
+
+cd "$root"
+if [[ -n "${ASHFRAME_CONSOLE_FIFO:-}" ]]; then
+  [[ "$ASHFRAME_CONSOLE_FIFO" == /run/ashframe-game-*/*.in ]] || { echo 'Unsafe console FIFO path.' >&2; exit 1; }
+  rm -f -- "$ASHFRAME_CONSOLE_FIFO"
+  mkfifo -m 0600 "$ASHFRAME_CONSOLE_FIFO"
+  # Keeping this descriptor open read/write means the FIFO never blocks a
+  # service start, while the game receives dashboard commands on stdin.
+  exec 3<> "$ASHFRAME_CONSOLE_FIFO"
+  exec /usr/bin/env bash -lc "$launcher" <&3
+fi
+
+exec /usr/bin/env bash -lc "$launcher"

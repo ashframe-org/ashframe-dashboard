@@ -1,0 +1,14 @@
+# Copy this into a Minecraft server folder as .ashframe-game.conf when ready.
+GAME_ID=minecraft-example
+DISPLAY_NAME=Minecraft Example
+GAME_TYPE=minecraft
+ENABLED=false
+LAUNCH_COMMAND=./start.sh
+WORLD_PATH=world
+BACKUP_MODE=minecraft-rcon
+RCON_HOST=127.0.0.1
+RCON_PORT=25575
+# One line containing the RCON password; keep this outside the game folder and Git.
+RCON_SECRET_FILE=/etc/ashframe-game-control/secrets/minecraft-example-rcon
+LOCAL_RETENTION=3
+REMOTE_RETENTION=1

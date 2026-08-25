@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACTION="${1:-}"
+CONFIG="${2:-}"
+LOCAL_ROOT="${ASHFRAME_GAME_DATA_ROOT:-$HOME/.local/share/ashframe-game-control}/backups"
+SFTP_TARGET="${ASHFRAME_BACKUP_SFTP_TARGET:-}"
+SFTP_KEY="${ASHFRAME_BACKUP_SFTP_KEY:-}"
+
+[[ "$ACTION" == backup || "$ACTION" == upload ]] || { echo 'Expected backup or upload.' >&2; exit 2; }
+[[ -f "$CONFIG" ]] || { echo "Missing config: $CONFIG" >&2; exit 2; }
+
+field() { sed -n "s/^${2}=//p" "$1" | head -n 1; }
+id="$(field "$CONFIG" GAME_ID)"
+type="$(field "$CONFIG" GAME_TYPE)"
+mode="$(field "$CONFIG" BACKUP_MODE)"
+retention="$(field "$CONFIG" LOCAL_RETENTION)"
+retention="${retention:-3}"
+root="$(dirname "$CONFIG")"
+backup_path="$(field "$CONFIG" BACKUP_PATH)"
+backup_path="${backup_path:-$id}"
+[[ "$backup_path" =~ ^[a-z0-9][a-z0-9-]{0,62}/[a-z0-9][a-z0-9-]{0,62}$ || "$backup_path" == "$id" ]] || {
+  echo 'BACKUP_PATH must use safe project/server directory names.' >&2; exit 2;
+}
+
+trim() {
+  local directory="$1" pattern="$2" keep="$3" item
+  mapfile -t files < <(find "$directory" -maxdepth 1 -type f -name "$pattern" -printf '%T@ %p\n' | sort -n | awk '{ $1=""; sub(/^ /, ""); print }')
+  local excess=$(( ${#files[@]} - keep ))
+  (( excess > 0 )) || return 0
+  for item in "${files[@]:0:excess}"; do rm -f -- "$item" "${item}.sha256"; done
+}
+
+latest() { find "$1" -maxdepth 1 -type f -name "$2" -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-; }
+
+# Uses only paths and file metadata. It avoids reading every world file's
+# contents while still detecting added, removed, resized, or modified files.
+source_fingerprint() {
+  find "$1" -type f -printf '%P\0%s\0%T@\0' | sort -z | sha256sum | awk '{print $1}'
+}
+
+snapshot_cubyz() {
+  local save_root save_name source destination temp stamp output state current_state
+  save_root="$(field "$CONFIG" SAVE_ROOT)"
+  save_name="$(field "$CONFIG" SAVE_NAME)"
+  source="$(field "$CONFIG" WORLD_PATH)"
+  [[ -n "$save_root" && -n "$save_name" && -d "$source" ]] || { echo 'Cubyz save path is not configured or missing.' >&2; exit 1; }
+  destination="$LOCAL_ROOT/$backup_path"; mkdir -p "$destination"
+  state="$destination/.source-state.sha256"
+  current_state="$(source_fingerprint "$source")"
+  if [[ -f "$state" && "$(<"$state")" == "$current_state" ]]; then
+    echo "Skipped $id: source files are unchanged."
+    return 0
+  fi
+  stamp="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+  temp="$destination/.${id}-${stamp}.tar.zst.part"
+  output="$destination/${id}-${stamp}.tar.zst"
+  tar --zstd -cf "$temp" -C "$save_root" "$save_name"
+  mv "$temp" "$output"
+  sha256sum "$output" > "$output.sha256"
+  printf '%s\n' "$current_state" > "$state"
+  trim "$destination" '*.tar.zst' "$retention"
+  echo "Created $output"
+}
+
+snapshot_minecraft() {
+  local source destination temp stamp output host port secret_file password
+  source="$root/$(field "$CONFIG" WORLD_PATH)"
+  host="$(field "$CONFIG" RCON_HOST)"; host="${host:-127.0.0.1}"
+  port="$(field "$CONFIG" RCON_PORT)"; port="${port:-25575}"
+  secret_file="$(field "$CONFIG" RCON_SECRET_FILE)"
+  [[ -d "$source" ]] || { echo 'Minecraft world path is not configured or missing.' >&2; exit 1; }
+  [[ -n "$secret_file" && -r "$secret_file" ]] || { echo 'Minecraft RCON secret file is missing.' >&2; exit 1; }
+  command -v mcrcon >/dev/null || { echo 'mcrcon is required for consistent Minecraft backups.' >&2; exit 1; }
+  password="$(<"$secret_file")"
+  destination="$LOCAL_ROOT/$backup_path"; mkdir -p "$destination"
+  stamp="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+  temp="$destination/.${id}-${stamp}.tar.zst.part"
+  output="$destination/${id}-${stamp}.tar.zst"
+  mcrcon -H "$host" -P "$port" -p "$password" 'save-off' 'save-all flush'
+  trap 'mcrcon -H "$host" -P "$port" -p "$password" "save-on" >/dev/null 2>&1 || true; rm -f -- "$temp"' EXIT
+  tar --zstd -cf "$temp" -C "$(dirname "$source")" "$(basename "$source")"
+  mcrcon -H "$host" -P "$port" -p "$password" 'save-on'
+  trap - EXIT
+  mv "$temp" "$output"
+  sha256sum "$output" > "$output.sha256"
+  trim "$destination" '*.tar.zst' "$retention"
+  echo "Created $output"
+}
+
+snapshot_hytale() {
+  local source
+  source="$root/$(field "$CONFIG" NATIVE_BACKUP_PATH)"
+  [[ -d "$source" ]] || { echo 'Hytale native backup path is missing.' >&2; exit 1; }
+  trim "$source" '*.zip' "$retention"
+  latest "$source" '*.zip'
+}
+
+upload() {
+  local source extension remote_dir local_sum remote_base remote_sum world state current_state
+  [[ -n "$SFTP_TARGET" && -n "$SFTP_KEY" && -r "$SFTP_KEY" ]] || { echo 'Set ASHFRAME_BACKUP_SFTP_TARGET and ASHFRAME_BACKUP_SFTP_KEY before uploading.' >&2; exit 2; }
+  if [[ "$type" == hytale ]]; then source="$(snapshot_hytale)"; else source="$(latest "$LOCAL_ROOT/$backup_path" '*.tar.zst')"; fi
+  [[ -n "$source" && -f "$source" ]] || { echo "No backup available for $id." >&2; exit 1; }
+  extension=".${source##*.}"; [[ "$source" == *.tar.zst ]] && extension='.tar.zst'
+  local_sum="${source}.sha256"; [[ -f "$local_sum" ]] || sha256sum "$source" > "$local_sum"
+  remote_dir="private/game-backups/$backup_path"; remote_base="current${extension}"
+  remote_sum="$(mktemp)"
+  if sftp -i "$SFTP_KEY" -o BatchMode=yes -b - "$SFTP_TARGET" > /dev/null 2>&1 <<EOF
+get $remote_dir/$remote_base.sha256 $remote_sum
+EOF
+  then
+    if cmp -s "$local_sum" "$remote_sum"; then
+      rm -f "$remote_sum"
+      echo "Skipped upload for $id: VPS archive checksum already matches."
+      return 0
+    fi
+    # Hytale ZIPs can differ only because archive metadata changed. If the
+    # world itself has not changed since the last successful off-site copy,
+    # keep the existing verified VPS archive instead of transferring a clone.
+    if [[ "$type" == hytale ]]; then
+      world="$root/$(field "$CONFIG" WORLD_PATH)"
+      state="$LOCAL_ROOT/$backup_path/.uploaded-source-state.sha256"
+      if [[ -d "$world" ]] && ! find "$world" -type f -newer "$source" -print -quit | grep -q .; then
+        current_state="$(source_fingerprint "$world")"
+        if [[ -f "$state" && "$(<"$state")" == "$current_state" ]]; then
+          rm -f "$remote_sum"
+          echo "Skipped upload for $id: Hytale world files are unchanged."
+          return 0
+        fi
+      fi
+    fi
+  fi
+  rm -f "$remote_sum"
+  sftp -i "$SFTP_KEY" -o BatchMode=yes -b - "$SFTP_TARGET" <<EOF
+put $source $remote_dir/$remote_base.part
+put $local_sum $remote_dir/$remote_base.sha256.part
+rename $remote_dir/$remote_base.part $remote_dir/$remote_base
+rename $remote_dir/$remote_base.sha256.part $remote_dir/$remote_base.sha256
+EOF
+  if [[ "$type" == hytale ]]; then
+    world="$root/$(field "$CONFIG" WORLD_PATH)"
+    state="$LOCAL_ROOT/$backup_path/.uploaded-source-state.sha256"
+    if [[ -d "$world" ]] && ! find "$world" -type f -newer "$source" -print -quit | grep -q .; then
+      mkdir -p "$(dirname "$state")"
+      source_fingerprint "$world" > "$state"
+    fi
+  fi
+  echo "Uploaded verified local archive for $id to $remote_dir/$remote_base"
+}
+
+case "$ACTION" in
+  backup)
+    case "$mode" in
+      native) snapshot_hytale >/dev/null; echo "Retained the newest $retention native Hytale backups." ;;
+      safe-copy) snapshot_cubyz ;;
+      minecraft-rcon) snapshot_minecraft ;;
+      *) echo "Unsupported backup mode: $mode" >&2; exit 2 ;;
+    esac
+    ;;
+  upload) upload ;;
+esac

@@ -1,0 +1,18 @@
+# Example Cubyz server. Copy this file into the server folder as
+# .ashframe-game.conf and replace every example value.
+GAME_ID=cubyz-example
+DISPLAY_NAME=Cubyz Example
+GAME_TYPE=cubyz
+BACKUP_PATH=cubyz/example
+ENABLED=true
+
+# Build manually after a Cubyz source update, then launch the resulting
+# headless binary directly so ordinary restarts are immediate.
+BUILD_COMMAND=./compiler/zig/zig build -Doptimize=ReleaseSafe
+LAUNCH_COMMAND=./zig-out/bin/Cubyz
+SAVE_ROOT=/path/to/cubyz/saves
+SAVE_NAME=YOUR_WORLD
+WORLD_PATH=/path/to/cubyz/saves/YOUR_WORLD
+BACKUP_MODE=safe-copy
+LOCAL_RETENTION=3
+REMOTE_RETENTION=1

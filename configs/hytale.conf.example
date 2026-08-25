@@ -1,0 +1,14 @@
+# Example Hytale server. This metadata does not alter Hytale itself.
+GAME_ID=hytale-example
+DISPLAY_NAME=Hytale Example
+GAME_TYPE=hytale
+BACKUP_PATH=hytale/example
+ENABLED=true
+
+# Paths relative to this file's directory.
+LAUNCH_COMMAND=./start.sh
+WORLD_PATH=Server/universe/worlds
+NATIVE_BACKUP_PATH=Server/backups
+BACKUP_MODE=native
+LOCAL_RETENTION=3
+REMOTE_RETENTION=1

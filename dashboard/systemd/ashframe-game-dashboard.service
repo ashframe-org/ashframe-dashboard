@@ -1,0 +1,21 @@
+[Unit]
+Description=Ashframe private game-control dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gamecontrol
+Group=gamecontrol
+WorkingDirectory=/opt/ashframe-game-control/dashboard
+ExecStart=/usr/bin/python3 /opt/ashframe-game-control/dashboard/dashboard.py
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+ProtectSystem=strict
+Environment=ASHFRAME_GAME_ROOT=/srv/games
+Environment=ASHFRAME_GAME_DATA_ROOT=/var/lib/ashframe-game-control
+ReadWritePaths=/var/lib/ashframe-game-control
+
+[Install]
+WantedBy=multi-user.target

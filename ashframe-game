@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+GAME_ROOT="${ASHFRAME_GAME_ROOT:-$HOME/games}"
+BACKUP_TOOL="/opt/ashframe-game-control/ashframe-game-backup"
+
+usage() {
+  cat <<'EOF'
+Usage: ashframe-game <list|status|start|stop|restart|logs|backup|upload> [game-id]
+EOF
+}
+
+configs() {
+  find "$GAME_ROOT" -mindepth 2 -maxdepth 2 -name .ashframe-game.conf -type f -print 2>/dev/null | sort
+}
+
+field() {
+  sed -n "s/^${2}=//p" "$1" | head -n 1
+}
+
+config_for() {
+  local wanted="$1" config
+  while IFS= read -r config; do
+    [[ "$(field "$config" GAME_ID)" == "$wanted" ]] && { printf '%s\n' "$config"; return 0; }
+  done < <(configs)
+  return 1
+}
+
+unit_for() { printf 'ashframe-%s.service' "$1"; }
+
+command="${1:-}"
+game_id="${2:-}"
+case "$command" in
+  list)
+    printf '%-22s %-22s %-10s %s\n' 'ID' 'NAME' 'TYPE' 'SERVICE'
+    while IFS= read -r config; do
+      id="$(field "$config" GAME_ID)"
+      printf '%-22s %-22s %-10s %s\n' "$id" "$(field "$config" DISPLAY_NAME)" "$(field "$config" GAME_TYPE)" "$(systemctl is-active "$(unit_for "$id")" 2>/dev/null || true)"
+    done < <(configs)
+    ;;
+  status|start|stop|restart|logs|backup|upload)
+    [[ -n "$game_id" ]] || { usage; exit 2; }
+    config="$(config_for "$game_id")" || { echo "Unknown game: $game_id" >&2; exit 2; }
+    case "$command" in
+      status) systemctl status "$(unit_for "$game_id")" --no-pager ;;
+      start|stop|restart) sudo systemctl "$command" "$(unit_for "$game_id")" ;;
+      logs) journalctl -u "$(unit_for "$game_id")" -n 100 --no-pager ;;
+      backup|upload) exec "$BACKUP_TOOL" "$command" "$config" ;;
+    esac
+    ;;
+  *) usage; exit 2 ;;
+esac
